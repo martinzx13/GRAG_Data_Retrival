@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Generated data artifacts (reproducible via step_one/step_two)
+dataset/expla_graphs/nodes/
+dataset/expla_graphs/edges/
+dataset/expla_graphs/graphs/
+dataset/expla_graphs/q_embs.pt
+dataset/expla_graphs/split/
+
+# Generated figures
+figures/
+/explagraph_visual.png
