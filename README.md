@@ -2,10 +2,18 @@
 
 Replication target for the ONTOGRAPH M.Sc. thesis. Upstream reference: [`../GRAG/`](../GRAG/) (read-only). Paper: [aclanthology.org/2025.findings-naacl.232](https://aclanthology.org/2025.findings-naacl.232.pdf).
 
-## Current status — 2026-10-27
+## Current status — 2026-11-02
 
-**No model code written yet.** Theory gating is open (C2′, D1, D2′ outstanding). What exists: lecture notes under `lecture/`, and the upstream repo audit in
-[`../literature/repo_audit_GRAG.md`](../literature/repo_audit_GRAG.md).
+**Preprocessing parity achieved; model code not started.** `step_one` (textualized graphs) is verified byte-for-byte against upstream on all 2,766 ExplaGraphs rows. Theory gating is closed for Blocks A–D; the remaining pipeline work is `step_two` (embedding), `generate_split`, and the Dataset round-trip.
+
+| Gate | Result |
+|---|---|
+| Unit tests (`unittest`, 7 cases) | **7/7 pass**, 3.0 s, 12 lines of output |
+| Lockfile parses (`pip install --dry-run --no-deps --no-index`) | exit 0 |
+| Oracle parity, `step_one` | 2,766 node + 2,766 edge CSVs per side; **5,532 manifest lines each; 0 hash diffs** |
+| Row-0 CSVs | byte-identical (`nodes/0.csv` `ee39f1ce…`, `edges/0.csv` `90a7005a…`) |
+
+**Open gate before `step_two`:** upstream's question encoder is buggy — it builds every question from the whole DataFrame, yielding **1 unique question** (measured), not 2,766. See `../literature/repo_audit_GRAG.md` §A10 and deviation D8. Do not start `step_two` until the literal-vs-corrected path is signed off.
 
 ## Scope decision
 
@@ -48,23 +56,38 @@ print(GATConv(4, 8, heads=4, concat=False).cuda()(x,
 | D4 | single-GPU `device_map` | upstream assumes 4×20 GiB |
 | D5 | 1 soft graph token (kept) | faithful to upstream code |
 | D6 | L=4 (kept) | paper App. A + `config.py:38` |
+| D7 | `src/dataset/__init__.py` kept empty | upstream `import src.dataset` loads SBERT on CUDA (§A11); tests stay offline |
+| D8 | question encoding: literal vs corrected — **pending** | upstream builds all questions from the whole DataFrame (§A10) |
+| D9 | module named `preprocess_expla.py` | cosmetic; upstream name is `expla_graphs.py` |
+| D10 | malformed triplets raise; empty graph is a no-op; explicit `step_one` output root | upstream silently drops malformed blocks and hardcodes the path; no effect on the released corpus (0 diffs) |
 
 Full rationale: `../literature/repo_audit_GRAG.md` §D.
 
-## How to run (ExplaGraphs) — target for Day 2
+## How to run (ExplaGraphs)
 
 ```bash
-cd ../GRAG          # preprocessing scripts live upstream
-python -m src.dataset.preprocess.expla_graphs   # step_one + step_two + generate_split
+cd 100_Projects/GraphRAG_Thesis/github_repos/GRAG_Data_Retrival
+source ~/venvs/grag_env/bin/activate
+
+# Textualize all 2,766 graphs -> dataset/expla_graphs/{nodes,edges}/
+python -m src.dataset.preprocess.preprocess_expla
+
+# Tests
+python -m unittest discover -s tests -v
 ```
 
-Produces `dataset/expla_graphs/{nodes,edges,graphs}/`, `q_embs.pt`, `split/`.
+`step_one(tsv_path, out_dir, show_progress=True)` is importable and takes an explicit output root; the CLI resolves the repo root by the `dataset/expla_graphs/train_dev.tsv` sentinel.
+
+Outputs (git-ignored): `dataset/expla_graphs/{nodes,edges}/{i}.csv`. `step_two` additionally produces `graphs/{i}.pt`, `q_embs.pt`, and `split/`.
 
 ## Directory layout
 
 ```
-lecture/                 lecture 01 (PyTorch/PyG), 02 (oversmoothing, soft prompting)
-docs/                    (empty — populate or remove)
-requirements.lock.txt    pinned freeze of the working venv
-../literature/repo_audit_GRAG.md   the audit that defines what "replicate" means here
+src/dataset/preprocess/preprocess_expla.py   parser, textualize_graph, step_one, CLI
+src/utils/visualization.py                   optional PNG rendering (matplotlib, out of pipeline)
+tests/test_preprocess_expla.py               7 unittest cases
+dataset/expla_graphs/train_dev.tsv           raw ExplaGraphs release (812 KB, committed)
+lecture/                                     lecture 01, 02 (PyG, oversmoothing, soft prompting)
+requirements.lock.txt                        pinned freeze of the working venv
+../literature/repo_audit_GRAG.md             audit: 11 findings, divergence + deviation registers
 ```
