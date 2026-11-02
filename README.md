@@ -13,7 +13,7 @@ Replication target for the ONTOGRAPH M.Sc. thesis. Upstream reference: [`../GRAG
 | Oracle parity, `step_one` | 2,766 node + 2,766 edge CSVs per side; **5,532 manifest lines each; 0 hash diffs** |
 | Row-0 CSVs | byte-identical (`nodes/0.csv` `ee39f1ce…`, `edges/0.csv` `90a7005a…`) |
 
-**Open gate before `step_two`:** upstream's question encoder is buggy — it builds every question from the whole DataFrame, yielding **1 unique question** (measured), not 2,766. See `../literature/repo_audit_GRAG.md` §A10 and deviation D8. Do not start `step_two` until the literal-vs-corrected path is signed off.
+**Question-encoder gate — decided (D8).** Upstream's `step_two` builds every question from the whole DataFrame, yielding **1 unique question** (measured), not 2,766. We produce **both** paths: `literal` reproduces the released code; `corrected` (`dataset.iloc[i]`) is primary and restores query-conditioned pruning. The two runs differ only in `z_q`, so their accuracy difference isolates the graph branch's contribution. See `../literature/repo_audit_GRAG.md` §A10 and deviation D8.
 
 ## Scope decision
 
@@ -57,7 +57,7 @@ print(GATConv(4, 8, heads=4, concat=False).cuda()(x,
 | D5 | 1 soft graph token (kept) | faithful to upstream code |
 | D6 | L=4 (kept) | paper App. A + `config.py:38` |
 | D7 | `src/dataset/__init__.py` kept empty | upstream `import src.dataset` loads SBERT on CUDA (§A11); tests stay offline |
-| D8 | question encoding: literal vs corrected — **pending** | upstream builds all questions from the whole DataFrame (§A10) |
+| D8 | question encoding: both paths, corrected primary — **decided 2026-11-02** | upstream builds all questions from the whole DataFrame (§A10); literal = code parity, corrected = paper intent |
 | D9 | module named `preprocess_expla.py` | cosmetic; upstream name is `expla_graphs.py` |
 | D10 | malformed triplets raise; empty graph is a no-op; explicit `step_one` output root | upstream silently drops malformed blocks and hardcodes the path; no effect on the released corpus (0 diffs) |
 
@@ -72,7 +72,7 @@ source ~/venvs/grag_env/bin/activate
 # Textualize all 2,766 graphs -> dataset/expla_graphs/{nodes,edges}/
 python -m src.dataset.preprocess.preprocess_expla
 
-# Tests
+# Tests (full suite; per-test guide in tests/README.md)
 python -m unittest discover -s tests -v
 ```
 
@@ -86,6 +86,7 @@ Outputs (git-ignored): `dataset/expla_graphs/{nodes,edges}/{i}.csv`. `step_two` 
 src/dataset/preprocess/preprocess_expla.py   parser, textualize_graph, step_one, CLI
 src/utils/visualization.py                   optional PNG rendering (matplotlib, out of pipeline)
 tests/test_preprocess_expla.py               7 unittest cases
+tests/README.md                              per-test execution guide and troubleshooting
 dataset/expla_graphs/train_dev.tsv           raw ExplaGraphs release (812 KB, committed)
 lecture/                                     lecture 01, 02 (PyG, oversmoothing, soft prompting)
 requirements.lock.txt                        pinned freeze of the working venv
