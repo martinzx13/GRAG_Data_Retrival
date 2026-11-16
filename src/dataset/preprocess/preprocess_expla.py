@@ -2,6 +2,10 @@
 
 Replicates `GRAG/src/dataset/preprocess/expla_graphs.py:18-44` (step_one).
 """
+import os 
+import torch 
+from torch_geometric.data import Data 
+from src.utils.lm_modeling import load_sbert, encode_texts
 
 import re
 from pathlib import Path
@@ -13,6 +17,29 @@ TRIPLET_RE = re.compile(r"\(([^()]*)\)")
 NODE_COLUMNS = ["node_id", "node_attr"]
 EDGE_COLUMNS = ["src", "edge_attr", "dst"]
 
+
+def build_questions(dataset:pd.DataFrame, mode: str="corrected") -> list[str]:
+    """
+    Builds the natural language question strings for all rows in the dataset.
+    mode='corrected': uses row-specific arg1 and arg2 (Paper intent / bugfix).
+    mode='literal': uses the whole Series stringification (reproduces upstream bug A10).
+    """
+    prompt = "Question: Do argument 1 and argument 2 support or counter each other? Answer in one word in the form of 'support' or 'counter'.\n\nAnswer:"
+    questions = []
+
+    if mode == "corrected":
+        for _, row in dataset.iterrows():
+            q = f"Argument 1: {row['arg1']}\nArgument 2: {row['arg2']}\n{prompt}"
+            questions.append(q)
+    elif mode == "literal":
+        # upstream Bug : text.arg1 is the entire Series
+        for _ in range(len(dataset)):
+            q = f"Argument 1 : {dataset.arg1}\nArgument 2: {dataset.arg2}\n{prompt}"
+            questions.append(q)
+    else:
+        raise ValueError(f"Unknown model : {mode}")
+
+    return (questions)
 
 def parse_triplets(graph_str: str) -> list[tuple[str, str, str]]:
     """Parse and validate `(src; relation; dst)` blocks.
@@ -98,6 +125,76 @@ def step_one(
 
     return len(dataset), total_edges
 
+def step_two(
+        tsv_path: Path,
+        out_dir: Path,
+        mode: str = "corrected",
+        batch_size: int = 64,
+        device: str = "cuda" if torch.cuda.is_available() else "cpu",
+        show_progress: bool = True,
+        ) -> None:
+        """Encodes questions and graphs into .pt tensors using SBERT.
+        Generates:
+          - out_dir / f"q_embs_{mode}.pt" (or q_embs.pt)
+          - out_dir / "graphs/{i}.pt"
+        """
+        dataset = pd.read_csv(tsv_path, sep="\t")
+        graphs_dir = out_dir / "graphs"
+        graphs_dir.mkdir(parents=True, exist_ok=True)
+
+        print(f"Loading SBERT model on {device}...")
+        model, tokenizer = load_sbert(device=device)
+
+        # 1. Encode all questions
+        print(f"Encoding {len(dataset)} questions (mode='{mode}')...")
+        questions = build_questions(dataset, mode=mode)
+        q_embs = encode_texts(model, tokenizer, questions, batch_size=batch_size, device=device)
+
+        q_embs_path = out_dir / f"q_embs_{mode}.pt"
+        torch.save(q_embs, q_embs_path)
+        # Also save as default q_embs.pt for seamless downstream compatibility
+        torch.save(q_embs, out_dir / "q_embs.pt")
+        print(f"Saved question embeddings -> {q_embs_path} ({q_embs.shape})")
+
+        # 2. Encode all graphs (nodes + edges)
+        nodes_dir = out_dir / "nodes"
+        edges_dir = out_dir / "edges"
+
+        rows = range(len(dataset))
+        if show_progress:
+            rows = tqdm(rows, desc="Encoding graph tensors", total=len(dataset))
+
+        for i in rows:
+            nodes_df = pd.read_csv(nodes_dir / f"{i}.csv")
+            edges_df = pd.read_csv(edges_dir / f"{i}.csv")
+
+            # Encode node attributes [num_nodes, 1024]
+            x = encode_texts(model, tokenizer, nodes_df["node_attr"].tolist(), batch_size=batch_size, device=device)
+
+            # Encode edge attributes [num_edges, 1024]
+            edge_attr = encode_texts(model, tokenizer, edges_df["edge_attr"].tolist(), batch_size=batch_size, device=device)
+
+            # Construct edge_index [2, num_edges]
+            edge_index = torch.tensor(
+                [edges_df["src"].tolist(), edges_df["dst"].tolist()],
+                dtype=torch.long,
+            )
+
+            # Repeat question embeddings for node and edge alignment
+            q_node = q_embs[i].unsqueeze(0).repeat(x.size(0), 1)
+            q_edge = q_embs[i].unsqueeze(0).repeat(edge_attr.size(0), 1)
+
+            data = Data(
+                x=x,
+                edge_index=edge_index,
+                edge_attr=edge_attr,
+                question_node=q_node,
+                question_edge=q_edge,
+                num_nodes=len(nodes_df),
+            )
+
+            torch.save(data, graphs_dir / f"{i}.pt")
+        print(f"Successfully generated {len(dataset)} graph tensors -> {graphs_dir}")
 
 def _project_root() -> Path:
     """Locate the repo root by a dataset sentinel, independent of nesting depth."""
@@ -112,8 +209,8 @@ def _project_root() -> Path:
 def main() -> None:
     root = _project_root()
     expla_dir = root / "dataset" / "expla_graphs"
-    n_rows, n_edges = step_one(expla_dir / "train_dev.tsv", expla_dir)
-    print(f"textualized {n_rows} graphs, {n_edges} edges -> {expla_dir}")
+    tsv_path = expla_dir / "train_dev.tsv"
+    step_two(tsv_path, expla_dir, mode="corrected", batch_size=64)
 
 
 if __name__ == "__main__":
